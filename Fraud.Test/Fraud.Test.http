@@ -1,0 +1,6 @@
+@Fraud.Test_HostAddress = http://localhost:5206
+
+GET {{Fraud.Test_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
