@@ -1,0 +1,13 @@
+@Fraud.Api_HostAddress = http://localhost:5083
+
+### Test Health
+GET {{Fraud.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+### Add Fraudulent Transaction (Amount > 1000)
+POST {{Fraud.Api_HostAddress}}/graphql/
+Content-Type: application/json
+
+{
+    "query": "mutation { addTransaction(accountId: \"00000000-0000-0000-0000-000000000001\", amount: 5000.50, merchant: \"Shady Electronics\") { id amount merchant } }"
+}
