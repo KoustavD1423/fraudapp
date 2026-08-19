@@ -1,80 +1,74 @@
-using MassTransit;
+using Fraud.Application.Services;
 using Fraud.Contracts;
-using Fraud.Infrastructure;
-using Fraud.Domain;
-using Microsoft.EntityFrameworkCore;
-using Serilog;
-using Fraud.Application.Data;
-using Fraud.Application.Rules;
+using MassTransit;
+using LogContext = Serilog.Context.LogContext;
 
 namespace Fraud.Worker;
 
 public class TransactionConsumer : IConsumer<TransactionIngested>
 {
-    private readonly ApplicationDbContext _db;
-    private readonly RuleEngine _ruleEngine;
+    private readonly IFraudProcessingService _fraudProcessingService;
+    private readonly ILogger<TransactionConsumer> _logger;
 
-    public TransactionConsumer(ApplicationDbContext db, RuleEngine ruleEngine)
+    public TransactionConsumer(
+        IFraudProcessingService fraudProcessingService,
+        ILogger<TransactionConsumer> logger)
     {
-        _db = db;
-        _ruleEngine = ruleEngine;
+        _fraudProcessingService = fraudProcessingService;
+        _logger = logger;
     }
 
-    public async Task Consume(ConsumeContext<TransactionIngested> context)
+    public async Task Consume(
+        ConsumeContext<TransactionIngested> context)
     {
         var message = context.Message;
-        var correlationId = context.CorrelationId ?? message.TransactionId;
 
-        // Correlation logging
-        if (context.CorrelationId == null)
+        // Prefer MassTransit's CorrelationId.
+        // Fall back to the CorrelationId carried inside the event.
+        var correlationId =
+            context.CorrelationId
+            ?? message.CorrelationId;
+
+        using (LogContext.PushProperty(
+                   "CorrelationId",
+                   correlationId))
+        using (LogContext.PushProperty(
+                   "TransactionId",
+                   message.TransactionId))
+        using (LogContext.PushProperty(
+                   "MessageId",
+                   context.MessageId))
         {
-            Log.Warning(
-                "Missing CorrelationId | MessageId: {MessageId} | Falling back to TransactionId: {TransactionId}",
-                context.MessageId,
-                correlationId);
-        }
-        else
-        {
-            Log.Information("CorrelationId: {CorrelationId}", correlationId);
-        }
+            _logger.LogInformation(
+                "TransactionIngested event received. " +
+                "AccountId: {AccountId}, " +
+                "Merchant: {Merchant}, " +
+                "Amount: {Amount}, " +
+                "Country: {Country}",
+                message.AccountId,
+                message.Merchant,
+                message.Amount,
+                message.Country);
 
-        // Idempotency check
-        var exists = await _db.Alerts
-            .AnyAsync(a => a.TransactionId == message.TransactionId, context.CancellationToken);
+            // ---------------------------------------------
+            // Correlation validation
+            // ---------------------------------------------
 
-        if (exists)
-        {
-            Log.Warning("Duplicate message ignored for Transaction {TransactionId}", message.TransactionId);
-            return;
-        }
-
-        Log.Information(
-            "Processing Tx {TransactionId} | CorrelationId: {CorrelationId} | MessageId: {MessageId}",
-            message.TransactionId,
-            correlationId,
-            context.MessageId);
-
-        var result = _ruleEngine.Evaluate(message);
-
-        // ✅ Proper if/else — no dangling else
-        if (result.isFraud)
-        {
-            var alert = new Alert
+            if (context.CorrelationId == null)
             {
-                TransactionId = message.TransactionId,
-                RiskScore = result.score,
-                Reason = string.Join(", ", result.reasons),
-                CreatedAt = DateTime.UtcNow
-            };
+                _logger.LogWarning(
+                    "MassTransit CorrelationId was missing. " +
+                    "Using event CorrelationId: {CorrelationId}",
+                    correlationId);
+            }
 
-            _db.Alerts.Add(alert);
-            await _db.SaveChangesAsync(context.CancellationToken);
+            // ---------------------------------------------
+            // Delegate fraud processing
+            // ---------------------------------------------
 
-            Log.Information("Fraud alert created for Transaction {TransactionId}", message.TransactionId);
-        }
-        else
-        {
-            Log.Information("Transaction {TransactionId} is safe", message.TransactionId);
+            await _fraudProcessingService.ProcessAsync(
+                message,
+                context.CancellationToken);
         }
     }
 }

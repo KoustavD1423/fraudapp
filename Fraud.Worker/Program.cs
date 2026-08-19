@@ -5,56 +5,91 @@ using Fraud.Application.Rules;
 using Fraud.Contracts;
 using Fraud.Infrastructure;
 using Fraud.Worker;
+using Fraud.Worker.Rules;
+using Fraud.Worker.Services;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+using Fraud.Application.Services;
 using Serilog;
-using Fraud.Contracts;
-using Fraud.Application.Rules;
 
 Log.Logger = new LoggerConfiguration()
-    .WriteTo.Console()
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Application", "Fraud.Worker")
+    .WriteTo.Console(
+        outputTemplate:
+        "[{Timestamp:HH:mm:ss} {Level:u3}] " +
+        "[CorrelationId: {CorrelationId}] " +
+        "[TransactionId: {TransactionId}] " +
+        "[MessageId: {MessageId}] " +
+        "{Message:lj}{NewLine}{Exception}")
     .CreateLogger();
 
-var host = Host.CreateDefaultBuilder(args)
-    .UseSerilog() // ✅ Placed here correctly!
-    .ConfigureServices((context, services) =>
-    {
-        services.AddDbContext<ApplicationDbContext>(opt =>
-            opt.UseSqlServer("Server=localhost\\SQLEXPRESS;Database=FraudDb;Trusted_Connection=True;TrustServerCertificate=True"));
+try
+{
+    Log.Information("Starting Fraud Worker Service...");
 
-
-        services.AddScoped<IFraudRule, HighAmountRule>();
-        services.AddScoped<IFraudRule, VeryHighAmountRule>();
-
-        services.AddScoped<RuleEngine>();
-        services.AddMassTransit(cfg =>
+    var host = Host.CreateDefaultBuilder(args)
+        .UseSerilog()
+        .ConfigureServices((context, services) =>
         {
-            cfg.AddConsumer<TransactionConsumer>();
+            var configuration = context.Configuration;
 
-            cfg.UsingRabbitMq((busContext, busCfg) =>
+            // 1. Database Configuration
+            services.AddDbContext<ApplicationDbContext>(opt =>
+                opt.UseSqlServer(configuration.GetConnectionString("DefaultConnection")
+                                 ??
+                                 "Server=localhost\\SQLEXPRESS;Database=FraudDb;Trusted_Connection=True;TrustServerCertificate=True"));
+
+            // 2. Singletons & Infrastructure
+            services.AddSingleton<RedisService>();
+
+            // 3. Fraud Rules (Registered as IFraudRule)
+            services.AddScoped<IFraudRule, HighAmountRule>();
+            services.AddScoped<IFraudRule, VeryHighAmountRule>();
+            services.AddScoped<IFraudRule, VelocityRule>();
+
+
+            // 4. Core Business Logic
+            services.AddScoped<RuleEngine>();
+
+            services.AddScoped<
+                IFraudProcessingService,
+                FraudProcessingService>();
+
+            // 5. MassTransit & RabbitMQ Setup
+            services.AddMassTransit(cfg =>
             {
-                busCfg.Host("localhost", "/", h =>
-                {
-                    h.Username("guest");
-                    h.Password("guest");
-                });
+                cfg.AddConsumer<TransactionConsumer>();
 
-                busCfg.ReceiveEndpoint("transaction-queue", ep =>
-                {   
-                    ep.UseMessageRetry(r =>
+                cfg.UsingRabbitMq((busContext, busCfg) =>
+                {
+                    busCfg.Host("localhost", "/", h =>
                     {
-                        r.Interval(3, TimeSpan.FromSeconds(5)); 
+                        h.Username("guest");
+                        h.Password("guest");
                     });
 
-                    ep.ConfigureConsumer<TransactionConsumer>(busContext);
+                    busCfg.ReceiveEndpoint("transaction-queue", ep =>
+                    {
+                        ep.UseMessageRetry(r => { r.Interval(3, TimeSpan.FromSeconds(5)); });
+
+                        ep.ConfigureConsumer<TransactionConsumer>(busContext);
+                    });
                 });
             });
-        });
-    })
-    .Build();
+        })
+        .Build();
 
-// 🔥 KEEP WORKER ALIVE
-await host.RunAsync();
+    await host.RunAsync();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Host terminated unexpectedly");
+}
+finally
+{
+    Log.CloseAndFlush();
+}

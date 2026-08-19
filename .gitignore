@@ -7,3 +7,9 @@ obj/
 *.dbmdl
 *.cache
 TestResults/
+# Local documents and media
+*.mp4
+*.pdf
+*.png
+*.jpg
+*.jpeg

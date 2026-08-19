@@ -1,0 +1,163 @@
+using Fraud.Application.Data;
+using Fraud.Application.Rules;
+using Fraud.Application.Services;
+using Fraud.Contracts;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Xunit;
+
+namespace Fraud.Tests.Unit;
+
+public class FraudProcessingServiceTests
+{
+    private static ApplicationDbContext CreateDbContext()
+    {
+        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+
+        return new ApplicationDbContext(options);
+    }
+
+    private static FraudProcessingService CreateService(
+        ApplicationDbContext db)
+    {
+        var rules = new IFraudRule[]
+        {
+            new HighAmountRule(),
+            new VeryHighAmountRule()
+        };
+
+        var ruleEngine = new RuleEngine(rules);
+
+        using var loggerFactory =
+            LoggerFactory.Create(builder => { });
+
+        var logger =
+            loggerFactory.CreateLogger<FraudProcessingService>();
+
+        return new FraudProcessingService(
+            db,
+            ruleEngine,
+            logger);
+    }
+
+    [Fact]
+    public async Task SameTransactionId_ShouldCreateOnlyOneAlert()
+    {
+        // Arrange
+        await using var db = CreateDbContext();
+
+        var service = CreateService(db);
+
+        var transactionId = Guid.NewGuid();
+
+        var transaction = new TransactionIngested
+        {
+            TransactionId = transactionId,
+            AccountId = Guid.NewGuid(),
+            Amount = 1500m,
+            Merchant = "Test Merchant",
+            Currency = "USD",
+            Country = "India",
+            DeviceId = "test-device",
+            IpAddress = "127.0.0.1"
+        };
+
+        // Act
+        await service.ProcessAsync(transaction);
+        await service.ProcessAsync(transaction);
+
+        // Assert
+        var alerts = await db.Alerts
+            .Where(a => a.TransactionId == transactionId)
+            .ToListAsync();
+
+        Assert.Single(alerts);
+    }
+
+    [Fact]
+    public async Task DifferentTransactionIds_ShouldCreateSeparateAlerts()
+    {
+        // Arrange
+        await using var db = CreateDbContext();
+
+        var service = CreateService(db);
+
+        var transaction1 = new TransactionIngested
+        {
+            TransactionId = Guid.NewGuid(),
+            AccountId = Guid.NewGuid(),
+            Amount = 1500m,
+            Merchant = "Merchant A"
+        };
+
+        var transaction2 = new TransactionIngested
+        {
+            TransactionId = Guid.NewGuid(),
+            AccountId = Guid.NewGuid(),
+            Amount = 1500m,
+            Merchant = "Merchant A"
+        };
+
+        // Act
+        await service.ProcessAsync(transaction1);
+        await service.ProcessAsync(transaction2);
+
+        // Assert
+        var alerts = await db.Alerts.ToListAsync();
+
+        Assert.Equal(2, alerts.Count);
+    }
+
+    [Fact]
+    public async Task NormalAmount_ShouldNotCreateAlert()
+    {
+        // Arrange
+        await using var db = CreateDbContext();
+
+        var service = CreateService(db);
+
+        var transaction = new TransactionIngested
+        {
+            TransactionId = Guid.NewGuid(),
+            AccountId = Guid.NewGuid(),
+            Amount = 500m,
+            Merchant = "Normal Merchant"
+        };
+
+        // Act
+        await service.ProcessAsync(transaction);
+
+        // Assert
+        var alerts = await db.Alerts.ToListAsync();
+
+        Assert.Empty(alerts);
+    }
+
+    [Fact]
+    public async Task VeryHighAmount_ShouldCreateHighRiskAlert()
+    {
+        // Arrange
+        await using var db = CreateDbContext();
+
+        var service = CreateService(db);
+
+        var transaction = new TransactionIngested
+        {
+            TransactionId = Guid.NewGuid(),
+            AccountId = Guid.NewGuid(),
+            Amount = 6000m,
+            Merchant = "High Risk Merchant"
+        };
+
+        // Act
+        await service.ProcessAsync(transaction);
+
+        // Assert
+        var alert = await db.Alerts.SingleAsync();
+
+        Assert.Equal(0.95, alert.RiskScore);
+        Assert.Contains("Very High Amount", alert.Reason);
+    }
+}
