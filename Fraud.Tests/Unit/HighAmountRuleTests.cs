@@ -7,7 +7,7 @@ namespace Fraud.Tests.Unit;
 public class HighAmountRuleTests
 {
     [Fact]
-    public void IsMatch_ShouldReturnTrue_WhenAmountIsAbove1000()
+    public async Task IsMatch_ShouldReturnTrue_WhenAmountIsAbove1000()
     {
         // Arrange
         var rule = new HighAmountRule();
@@ -21,14 +21,14 @@ public class HighAmountRuleTests
         };
 
         // Act
-        var result = rule.IsMatch(transaction);
+        var result = await rule.IsMatchAsync(transaction);
 
         // Assert
         Assert.True(result);
     }
 
     [Fact]
-    public void IsMatch_ShouldReturnFalse_WhenAmountIsBelow1000()
+    public async Task IsMatch_ShouldReturnFalse_WhenAmountIsBelow1000()
     {
         // Arrange
         var rule = new HighAmountRule();
@@ -42,14 +42,14 @@ public class HighAmountRuleTests
         };
 
         // Act
-        var result = rule.IsMatch(transaction);
+        var result = await rule.IsMatchAsync(transaction);
 
         // Assert
         Assert.False(result);
     }
 
     [Fact]
-    public void IsMatch_ShouldReturnFalse_WhenAmountIsExactly1000()
+    public async Task IsMatch_ShouldReturnFalse_WhenAmountIsExactly1000()
     {
         // Arrange
         var rule = new HighAmountRule();
@@ -63,14 +63,14 @@ public class HighAmountRuleTests
         };
 
         // Act
-        var result = rule.IsMatch(transaction);
+        var result = await rule.IsMatchAsync(transaction);
 
         // Assert
         Assert.False(result);
     }
 
     [Fact]
-    public void Rule_ShouldHaveExpectedNameAndRiskScore()
+    public async Task Rule_ShouldHaveExpectedNameAndRiskScore()
     {
         // Arrange
         var rule = new HighAmountRule();

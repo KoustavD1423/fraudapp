@@ -16,14 +16,15 @@ public class VelocityRule : IFraudRule
         _redis = redis;
     }
 
-    public bool IsMatch(TransactionIngested tx)
+    public async Task<bool> IsMatchAsync(
+        TransactionIngested tx,
+        CancellationToken cancellationToken = default)
     {
         var key = $"velocity:{tx.AccountId}";
 
-        var count = _redis
-            .IncrementWithExpiryAsync(key, TimeSpan.FromMinutes(1))
-            .GetAwaiter()
-            .GetResult();
+        var count = await _redis.IncrementWithExpiryAsync(
+            key,
+            TimeSpan.FromMinutes(1));
 
         return count > 5;
     }

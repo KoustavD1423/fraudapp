@@ -7,8 +7,10 @@ public class VeryHighAmountRule : IFraudRule
     public string Name => "Very High Amount";
     public double RiskScore => 0.95;
 
-    public bool IsMatch(TransactionIngested tx)
+    public Task<bool> IsMatchAsync(
+        TransactionIngested tx,
+        CancellationToken cancellationToken = default)
     {
-        return tx.Amount > 5000;
-    }
+        return Task.FromResult(tx.Amount > 5000);
+    }   
 }

@@ -11,11 +11,19 @@ public class RuleEngine
         _rules = rules;
     }
 
-    public (bool isFraud, double score, List<string> reasons) Evaluate(TransactionIngested tx)
+    public async Task<(bool isFraud, double score, List<string> reasons)> EvaluateAsync(
+    TransactionIngested tx,
+    CancellationToken cancellationToken = default)
     {
-        var matchedRules = _rules
-            .Where(r => r.IsMatch(tx))
-            .ToList();
+        var matchedRules = new List<IFraudRule>();
+
+        foreach (var rule in _rules)
+        {
+            if (await rule.IsMatchAsync(tx, cancellationToken))
+            {
+                matchedRules.Add(rule);
+            }
+        }
 
         if (!matchedRules.Any())
             return (false, 0, new List<string>());

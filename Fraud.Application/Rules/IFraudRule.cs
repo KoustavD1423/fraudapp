@@ -7,5 +7,7 @@ public interface IFraudRule
     string Name { get; }
     double RiskScore { get; }
 
-    bool IsMatch(TransactionIngested tx);
+    Task<bool> IsMatchAsync(
+        TransactionIngested tx,
+        CancellationToken cancellationToken = default);
 }

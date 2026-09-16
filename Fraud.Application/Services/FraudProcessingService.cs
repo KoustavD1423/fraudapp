@@ -55,7 +55,7 @@ public class FraudProcessingService : IFraudProcessingService
             "TransactionId: {TransactionId}",
             transaction.TransactionId);
 
-        var result = _ruleEngine.Evaluate(transaction);
+        var result =  await _ruleEngine.EvaluateAsync(transaction, cancellationToken);
 
         _logger.LogInformation(
             "Fraud rule evaluation completed. " +

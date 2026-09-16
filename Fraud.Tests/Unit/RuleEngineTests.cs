@@ -7,7 +7,7 @@ namespace Fraud.Tests.Unit;
 public class RuleEngineTests
 {
     [Fact]
-    public void Evaluate_ShouldReturnNoFraud_WhenNoRulesMatch()
+    public async Task Evaluate_ShouldReturnNoFraud_WhenNoRulesMatch()
     {
         // Arrange
         var rules = new IFraudRule[]
@@ -27,7 +27,7 @@ public class RuleEngineTests
         };
 
         // Act
-        var result = engine.Evaluate(transaction);
+        var result = await engine.EvaluateAsync(transaction);
 
         // Assert
         Assert.False(result.isFraud);
@@ -36,7 +36,7 @@ public class RuleEngineTests
     }
 
     [Fact]
-    public void Evaluate_ShouldMatchHighAmountRule_WhenAmountIsAbove1000()
+    public async Task Evaluate_ShouldMatchHighAmountRule_WhenAmountIsAbove1000()
     {
         // Arrange
         var rules = new IFraudRule[]
@@ -56,7 +56,7 @@ public class RuleEngineTests
         };
 
         // Act
-        var result = engine.Evaluate(transaction);
+        var result = await engine.EvaluateAsync(transaction);
 
         // Assert
         Assert.True(result.isFraud);
@@ -67,7 +67,7 @@ public class RuleEngineTests
     }
 
     [Fact]
-    public void Evaluate_ShouldMatchBothRules_WhenAmountIsAbove5000()
+    public async Task Evaluate_ShouldMatchBothRules_WhenAmountIsAbove5000()
     {
         // Arrange
         var rules = new IFraudRule[]
@@ -87,7 +87,7 @@ public class RuleEngineTests
         };
 
         // Act
-        var result = engine.Evaluate(transaction);
+        var result = await engine.EvaluateAsync(transaction);
 
         // Assert
         Assert.True(result.isFraud);
@@ -101,7 +101,7 @@ public class RuleEngineTests
     }
 
     [Fact]
-    public void Evaluate_ShouldNotMatchHighAmountRule_WhenAmountIsExactly1000()
+    public async Task Evaluate_ShouldNotMatchHighAmountRule_WhenAmountIsExactly1000()
     {
         // Arrange
         var rules = new IFraudRule[]
@@ -121,7 +121,7 @@ public class RuleEngineTests
         };
 
         // Act
-        var result = engine.Evaluate(transaction);
+        var result = await engine.EvaluateAsync(transaction);
 
         // Assert
         Assert.False(result.isFraud);
@@ -130,7 +130,7 @@ public class RuleEngineTests
     }
 
     [Fact]
-    public void Evaluate_ShouldNotMatchVeryHighAmountRule_WhenAmountIsExactly5000()
+    public async Task Evaluate_ShouldNotMatchVeryHighAmountRule_WhenAmountIsExactly5000()
     {
         // Arrange
         var rules = new IFraudRule[]
@@ -150,7 +150,7 @@ public class RuleEngineTests
         };
 
         // Act
-        var result = engine.Evaluate(transaction);
+        var result = await engine.EvaluateAsync(transaction);
 
         // Assert
         Assert.True(result.isFraud);
