@@ -11,7 +11,7 @@ Build a production-oriented fraud detection platform using event-driven architec
 |---:|---|---|---|
 | 0 | Foundation | Clean architecture baseline | ✅ Complete |
 | 1 | Messaging Core | RabbitMQ + MassTransit + reliability | ✅ Complete |
-| 2 | Fraud Intelligence | Rule engine + Redis velocity | 🟡 In Progress |
+| 2 | Fraud Intelligence | Rule engine + Redis velocity + processing reliability | ✅ Complete |
 | 3 | Feature Store | Real-time feature engineering | ⏳ Planned |
 | 4 | ML Scoring Service | Risk model inference | ⏳ Planned |
 | 5 | Vector Search | Similarity and fraud rings | ⏳ Planned |
@@ -85,87 +85,50 @@ Fraud Worker
 
 # Sprint 2 — Fraud Intelligence
 
-### Status: IN PROGRESS
+### Status: COMPLETE
 
 ### Completed
 
-**Platform Reliability**
-- Health checks
-  - SQL Server health check
-  - RabbitMQ health check
-  - `IOptions<RabbitMqOptions>`
-- Global exception middleware
-- Correlation ID handling
-- Structured Serilog logging
+**Fraud Rules and Risk Signals**
+- Asynchronous fraud-rule evaluation
+- `HighAmountRule` and `VeryHighAmountRule`
+- `VelocityRule` for account, device, and IP dimensions
+- Detailed velocity results and dimension-specific risk reasons
+- Configurable velocity thresholds and time window through `VelocityOptions`
+- Fixed-expiry Redis counters and per-transaction/per-dimension deduplication
+- Redis Lua-based atomic counter/deduplication operations
+- Velocity signals integrated into the rule engine and persisted fraud reasons
 
-**Fraud Processing**
-- `IFraudRule`
-- `HighAmountRule`
-- `VeryHighAmountRule`
-- `RuleEngine`
-- `FraudProcessingService`
-- Fraud alert persistence
+**Producer Messaging Reliability**
+- EF Core MassTransit Bus Outbox
+- Transaction persistence and outgoing event committed atomically
+- Outbox migration and SQL Server persistence
+- Manual RabbitMQ outage/recovery verification: the queued event was processed after RabbitMQ returned, without resubmitting the transaction
 
-**Idempotency**
-- Application-level duplicate detection
-- Database unique constraint on `Alert.TransactionId`
-- Idempotency unit tests
+**Consumer and Business Idempotency**
+- MassTransit Consumer Outbox/Inbox configured for the transaction consumer
+- Duplicate message-ID suppression
+- Business idempotency for repeated delivery of a transaction with a different message ID
+- Durable processing outcome on `Transaction`: processing status, fraud decision, risk score, reasons, processed timestamp, and SQL Server row-version concurrency token
+- Processing outcome and optional alert persisted together
+- Recovery of existing alerts and protection against duplicate alerts under concurrent processing
 
-**Testing**
-- Rule engine tests
-- Transaction event factory tests
-- Context tests
-- Fraud processing tests
-- Idempotency tests
-- API → RabbitMQ → Worker verification
-- Middleware runtime verification
+**Retry and Failure Recovery**
+- Partial Redis-dimension failure/retry verification
+- SQL failure after Redis operations with retry recovery verification
+- SQL Server concurrency and duplicate-alert protection tests
+- Redis verification harness for counter, TTL, and deduplication behavior
 
-### Remaining
+**Migrations and Testing**
+- EF Core migrations for MassTransit outbox and durable processing outcomes
+- Migration list validated against the ApplicationDbContext migration assembly
+- `dotnet ef migrations has-pending-model-changes` reports no pending model changes
+- Full local test suite reported passing: 43 tests
+- Integration tests exercise SQL Server, Redis, and RabbitMQ and require those dependencies to be available
 
-**Redis Fraud Velocity**
+### Outcome
 
-Implement real-time transaction velocity detection using Redis.
-
-Initial capabilities:
-- Transaction count by account
-- Transaction count by device
-- Transaction count by IP
-- Time-window based velocity
-- Short-term transaction frequency
-- Redis TTL
-- Velocity-based risk signals
-- Integration with fraud processing
-
-### Target Architecture
-
-```text
-Transaction
-     |
-     v
-  RabbitMQ
-     |
-     v
- Fraud Worker
-     |
-     v
-FraudProcessingService
-     |
-     +------------+
-     |            |
-     v            v
-Rule Engine     Redis
-     |         Velocity
-     |            |
-     +-----+------+
-           |
-           v
-      Risk Signals
-           |
-           v
-        Alert
-```
-
----
+Transactions are ingested through a durable producer outbox, evaluated asynchronously against amount and velocity rules, and processed with consumer/business idempotency. SQL Server stores the durable decision and alert outcome; Redis provides time-window velocity signals without serving as the transactional source of truth.
 
 # Sprint 3 — Feature Store
 
