@@ -4,6 +4,7 @@ using Fraud.Contracts;
 using Fraud.Domain;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Data.SqlClient;
 
 namespace Fraud.Application.Services;
 
@@ -24,87 +25,233 @@ public class FraudProcessingService : IFraudProcessingService
     }
 
     public async Task ProcessAsync(
-        TransactionIngested transaction,
+        TransactionIngested message,
         CancellationToken cancellationToken = default)
     {
-        // ---------------------------------------------
-        // Idempotency
-        // ---------------------------------------------
+        ArgumentNullException.ThrowIfNull(message);
 
-        var exists = await _db.Alerts
-            .AnyAsync(
-                a => a.TransactionId == transaction.TransactionId,
+        if (message.TransactionId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "TransactionId must be populated.",
+                nameof(message));
+        }
+
+        var transaction = await _db.Transactions
+            .SingleOrDefaultAsync(
+                t => t.Id == message.TransactionId,
                 cancellationToken);
 
-        if (exists)
+        if (transaction is null)
         {
-            _logger.LogWarning(
-                "Duplicate transaction ignored. " +
-                "TransactionId: {TransactionId}",
-                transaction.TransactionId);
-
-            return;
+            throw new InvalidOperationException(
+                $"Transaction {message.TransactionId} was not found.");
         }
 
-        // ---------------------------------------------
-        // Fraud rule evaluation
-        // ---------------------------------------------
+        // Prevent an inconsistent event from reusing an existing ID.
+        if (transaction.AccountId != message.AccountId
+            || transaction.Amount != message.Amount
+            || !string.Equals(
+                transaction.Merchant,
+                message.Merchant,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Transaction event payload does not match persisted transaction {message.TransactionId}.");
+        }
 
-        _logger.LogInformation(
-            "Starting fraud rule evaluation. " +
-            "TransactionId: {TransactionId}",
-            transaction.TransactionId);
-
-        var result =  await _ruleEngine.EvaluateAsync(transaction, cancellationToken);
-
-        _logger.LogInformation(
-            "Fraud rule evaluation completed. " +
-            "TransactionId: {TransactionId}, " +
-            "IsFraud: {IsFraud}, RiskScore: {RiskScore}",
-            transaction.TransactionId,
-            result.isFraud,
-            result.score);
-
-        // ---------------------------------------------
-        // No fraud
-        // ---------------------------------------------
-
-        if (!result.isFraud)
+        // A successfully completed transaction must not be evaluated again.
+        if (transaction.ProcessingStatus
+            == TransactionProcessingStatus.Completed)
         {
             _logger.LogInformation(
-                "Transaction passed fraud evaluation. " +
-                "TransactionId: {TransactionId}",
-                transaction.TransactionId);
+                "Skipping completed transaction {TransactionId}. IsFraud: {IsFraud}",
+                message.TransactionId,
+                transaction.IsFraud);
 
             return;
         }
 
-        // ---------------------------------------------
-        // Fraud detected
-        // ---------------------------------------------
+        // Recover an alert created by the earlier implementation if its
+        // processing outcome has not yet been recorded.
+        var existingAlert = await _db.Alerts
+            .SingleOrDefaultAsync(
+                a => a.TransactionId == message.TransactionId,
+                cancellationToken);
 
-        var alert = new Alert
+        if (existingAlert is not null)
         {
-            Id = Guid.NewGuid(),
-            TransactionId = transaction.TransactionId,
-            RiskScore = result.score,
-            Reason = string.Join(
-                ", ",
-                result.reasons),
-            CreatedAt = DateTime.UtcNow
-        };
+            transaction.ProcessingStatus =
+                TransactionProcessingStatus.Completed;
 
-        _db.Alerts.Add(alert);
+            transaction.IsFraud = true;
+            transaction.RiskScore = existingAlert.RiskScore;
+            transaction.FraudReasons = existingAlert.Reason;
+            transaction.ProcessedAt = existingAlert.CreatedAt;
 
-        await _db.SaveChangesAsync(cancellationToken);
+            await SaveCompletionAsync(
+                transaction,
+                message.TransactionId,
+                cancellationToken);
 
-        _logger.LogWarning(
-            "Fraud alert created. " +
-            "TransactionId: {TransactionId}, " +
-            "RiskScore: {RiskScore}, " +
-            "Reason: {Reason}",
-            transaction.TransactionId,
-            result.score,
-            alert.Reason);
+            _logger.LogInformation(
+                "Recovered processing outcome from existing alert for {TransactionId}",
+                message.TransactionId);
+
+            return;
+        }
+
+        _logger.LogInformation(
+            "Starting fraud evaluation for transaction {TransactionId}",
+            message.TransactionId);
+
+        var result = await _ruleEngine.EvaluateAsync(
+            message,
+            cancellationToken);
+
+        var processedAt = DateTime.UtcNow;
+        var reasons = string.Join(", ", result.reasons);
+
+        transaction.ProcessingStatus =
+            TransactionProcessingStatus.Completed;
+
+        transaction.IsFraud = result.isFraud;
+        transaction.RiskScore = result.score;
+        transaction.FraudReasons = reasons;
+        transaction.ProcessedAt = processedAt;
+
+        if (result.isFraud)
+        {
+            _db.Alerts.Add(new Alert
+            {
+                Id = Guid.NewGuid(),
+                TransactionId = message.TransactionId,
+                RiskScore = result.score,
+                Reason = reasons,
+                CreatedAt = processedAt
+            });
+        }
+
+        // Save the durable outcome and optional alert together.
+        await SaveCompletionAsync(
+            transaction,
+            message.TransactionId,
+            cancellationToken);
+
+        _logger.LogInformation(
+            "Fraud evaluation completed for {TransactionId}. IsFraud: {IsFraud}, RiskScore: {RiskScore}",
+            message.TransactionId,
+            result.isFraud,
+            result.score);
+    }
+
+    private async Task SaveCompletionAsync(
+    Transaction transaction,
+    Guid transactionId,
+    CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Another worker may have completed this transaction first.
+            if (await TryRecoverConcurrentCompletionAsync(
+                    transaction,
+                    transactionId,
+                    cancellationToken))
+            {
+                return;
+            }
+
+            // The transaction is not completed in the database.
+            // Preserve the failure so MassTransit can handle it.
+            throw;
+        }
+        catch (DbUpdateException ex)
+            when (IsAlertTransactionUniqueViolation(ex))
+        {
+            // Two workers may both have evaluated the same transaction
+            // and attempted to insert its alert.
+            //
+            // SQL Server's unique index allows only one alert per transaction.
+            // Treat the losing worker as a successful duplicate only if the
+            // winning worker has already persisted a completed outcome.
+            if (await TryRecoverConcurrentCompletionAsync(
+                    transaction,
+                    transactionId,
+                    cancellationToken))
+            {
+                return;
+            }
+
+            // Do not swallow the exception if another worker's completion
+            // cannot be confirmed.
+            throw;
+        }
+    }
+
+    private async Task<bool> TryRecoverConcurrentCompletionAsync(
+        Transaction transaction,
+        Guid transactionId,
+        CancellationToken cancellationToken)
+    {
+        // Remove any alert insert left in the Added state after the failed save.
+        // This prevents the same DbContext from retrying that stale insert.
+        var pendingAlerts = _db.ChangeTracker
+            .Entries<Alert>()
+            .Where(entry =>
+                entry.State == EntityState.Added
+                && entry.Entity.TransactionId == transactionId)
+            .ToList();
+
+        foreach (var entry in pendingAlerts)
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        // Refresh the tracked transaction with the authoritative database state.
+        // ReloadAsync also refreshes its rowversion and resets its tracking state.
+        await _db.Entry(transaction)
+            .ReloadAsync(cancellationToken);
+
+        if (transaction.ProcessingStatus
+            != TransactionProcessingStatus.Completed)
+        {
+            return false;
+        }
+
+        _logger.LogInformation(
+            "Transaction {TransactionId} was completed by another worker. " +
+            "Treating concurrent processing as duplicate success.",
+            transactionId);
+
+        return true;
+    }
+
+    private static bool IsAlertTransactionUniqueViolation(
+        DbUpdateException exception)
+    {
+        // SQL Server error 2601: duplicate key in a unique index.
+        // SQL Server error 2627: violation of a unique constraint.
+        //
+        // Inspect the inner-exception chain and require the expected index
+        // name so unrelated database errors are not treated as duplicates.
+        for (Exception? current = exception;
+             current is not null;
+             current = current.InnerException)
+        {
+            if (current is SqlException sqlException
+                && sqlException.Number is 2601 or 2627
+                && sqlException.Message.Contains(
+                    "IX_Alerts_TransactionId",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

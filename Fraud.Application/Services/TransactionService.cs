@@ -27,9 +27,10 @@ public class TransactionService
     }
 
     public async Task<Transaction> CreateTransaction(
-        Guid accountId,
-        decimal amount,
-        string merchant)
+    Guid accountId,
+    decimal amount,
+    string merchant,
+    CancellationToken cancellationToken = default)
     {
         var tx = new Transaction
         {
@@ -47,14 +48,10 @@ public class TransactionService
             tx.Amount,
             tx.Merchant);
 
-        // Save transaction
-        await _repo.AddAsync(tx);
+        // 1. Track the transaction. No database commit yet.
+        await _repo.AddAsync(tx, cancellationToken);
 
-        _logger.LogInformation(
-            "Transaction {TransactionId} persisted successfully",
-            tx.Id);
-
-        // Create integration event
+        // 2. Create the integration event.
         var transactionEvent = _eventFactory.Create(tx);
 
         _logger.LogInformation(
@@ -62,20 +59,25 @@ public class TransactionService
             tx.Id,
             transactionEvent.CorrelationId);
 
-        // Publish event
+        // 3. Publish through MassTransit's scoped Bus Outbox.
+        // The outgoing message is stored in the EF Core context.
         await _publishEndpoint.Publish(
             transactionEvent,
             context =>
             {
-                context.CorrelationId =
-                    transactionEvent.CorrelationId;
-            });
+                context.CorrelationId = transactionEvent.CorrelationId;
+            },
+            cancellationToken);
+
+        // 4. Commit the transaction and outbox message together.
+        await _repo.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
-            "Transaction {TransactionId} published successfully with CorrelationId {CorrelationId}",
+            "Transaction {TransactionId} and its outbox message committed successfully. CorrelationId: {CorrelationId}",
             tx.Id,
             transactionEvent.CorrelationId);
 
         return tx;
     }
+
 }

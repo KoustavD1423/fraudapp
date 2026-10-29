@@ -14,6 +14,9 @@ public class TransactionConsumer : IConsumer<TransactionIngested>
         IFraudProcessingService fraudProcessingService,
         ILogger<TransactionConsumer> logger)
     {
+        ArgumentNullException.ThrowIfNull(fraudProcessingService);
+        ArgumentNullException.ThrowIfNull(logger);
+
         _fraudProcessingService = fraudProcessingService;
         _logger = logger;
     }
@@ -25,6 +28,7 @@ public class TransactionConsumer : IConsumer<TransactionIngested>
 
         // Prefer MassTransit's CorrelationId.
         // Fall back to the CorrelationId carried inside the event.
+        
         var correlationId =
             context.CorrelationId
             ?? message.CorrelationId;

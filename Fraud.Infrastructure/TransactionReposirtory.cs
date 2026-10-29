@@ -1,6 +1,6 @@
+using Fraud.Application.Data;
 using Fraud.Application.Interfaces;
 using Fraud.Domain;
-using Fraud.Application.Data;
 
 namespace Fraud.Infrastructure;
 
@@ -13,9 +13,21 @@ public class TransactionRepository : ITransactionRepository
         _db = db;
     }
 
-    public async Task AddAsync(Transaction transaction)
+    public async Task AddAsync(
+        Transaction transaction,
+        CancellationToken cancellationToken = default)
     {
-        _db.Transactions.Add(transaction);
-        await _db.SaveChangesAsync();
+        await _db.Transactions.AddAsync(
+            transaction,
+            cancellationToken);
+
+        // Do not call SaveChangesAsync here.
+        // TransactionService commits the transaction and outbox message.
+    }
+
+    public Task<int> SaveChangesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        return _db.SaveChangesAsync(cancellationToken);
     }
 }

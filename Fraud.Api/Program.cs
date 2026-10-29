@@ -30,10 +30,19 @@ builder.Services.AddScoped<ITransactionRepository, TransactionRepository>();
 builder.Services.AddScoped<IEventBus, RabbitMqEventBus>();
 builder.Services.AddMassTransit(cfg =>
 {
+    // Transactional Outbox - here the bus captures events and saves them to the db in one atomic transaction in the integrated EF Core and delivers them to the RabbitMQ Broker after they have been persisted.
+    cfg.AddEntityFrameworkOutbox<ApplicationDbContext>(options =>
+    {
+        options.UseSqlServer();
+        options.UseBusOutbox();
+    });
+
+    // Existing RabbitMQ configuration
     cfg.UsingRabbitMq((context, busCfg) =>
     {
-        var rabbitOptions = context.GetRequiredService<
-            Microsoft.Extensions.Options.IOptions<RabbitMqOptions>>().Value;
+        var rabbitOptions = context
+            .GetRequiredService<IOptions<RabbitMqOptions>>()
+            .Value;
 
         busCfg.Host(
             rabbitOptions.Host,
@@ -46,10 +55,8 @@ builder.Services.AddMassTransit(cfg =>
     });
 });
 
-// REQUIRED for MassTransit v7
-//builder.Services.AddMassTransitHostedService();
+builder.Services.AddMassTransitHostedService();
 
-// Services
 builder.Services.AddScoped<TransactionService>();
 builder.Services.AddScoped<ITransactionEventFactory, TransactionEventFactory>();
 builder.Services.AddHttpContextAccessor();

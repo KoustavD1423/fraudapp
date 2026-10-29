@@ -1,7 +1,9 @@
 using Fraud.Application;
+using Fraud.Application.Configuration;
 using Fraud.Application.Data;
 using Fraud.Application.Interfaces;
 using Fraud.Application.Rules;
+using Fraud.Application.Services;
 using Fraud.Contracts;
 using Fraud.Infrastructure;
 using Fraud.Worker;
@@ -12,8 +14,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Fraud.Application.Services;
 using Serilog;
+using StackExchange.Redis;
+
 
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
@@ -36,6 +39,9 @@ try
         .ConfigureServices((context, services) =>
         {
             var configuration = context.Configuration;
+            services.Configure<VelocityOptions>(
+                configuration.GetSection(VelocityOptions.SectionName));
+
 
             // 1. Database Configuration
             services.AddDbContext<ApplicationDbContext>(opt =>
@@ -44,7 +50,17 @@ try
                                  "Server=localhost\\SQLEXPRESS;Database=FraudDb;Trusted_Connection=True;TrustServerCertificate=True"));
 
             // 2. Singletons & Infrastructure
-            services.AddSingleton<RedisService>();
+            services.AddSingleton<IConnectionMultiplexer>(_ =>
+                {
+                    var connectionString =
+                        configuration.GetConnectionString("Redis")
+                        ?? "localhost:6379";
+
+                    return ConnectionMultiplexer.Connect(connectionString);
+                });
+
+            services.AddSingleton<IRedisService, RedisService>();
+
 
             // 3. Fraud Rules (Registered as IFraudRule)
             services.AddScoped<IFraudRule, HighAmountRule>();
@@ -64,6 +80,12 @@ try
             {
                 cfg.AddConsumer<TransactionConsumer>();
 
+                cfg.AddEntityFrameworkOutbox<ApplicationDbContext>(options =>
+                {
+                 options.UseSqlServer();   
+                });
+                //lambda callback of masstransit, it resolves the ntransaction processing service and all 
+                // of its dependenciwes from the DI container each time a message arrives from the rabbit mq
                 cfg.UsingRabbitMq((busContext, busCfg) =>
                 {
                     busCfg.Host("localhost", "/", h =>
@@ -75,6 +97,8 @@ try
                     busCfg.ReceiveEndpoint("transaction-queue", ep =>
                     {
                         ep.UseMessageRetry(r => { r.Interval(3, TimeSpan.FromSeconds(5)); });
+                        ep.UseEntityFrameworkOutbox<ApplicationDbContext>(
+                        busContext);
 
                         ep.ConfigureConsumer<TransactionConsumer>(busContext);
                     });
@@ -82,6 +106,7 @@ try
             });
         })
         .Build();
+
 
     await host.RunAsync();
 }

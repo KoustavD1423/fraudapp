@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Fraud.Domain;
+using MassTransit;
 
 namespace Fraud.Application.Data;
 
@@ -14,12 +15,31 @@ public class ApplicationDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+        modelBuilder.AddInboxStateEntity();
+        modelBuilder.AddOutboxMessageEntity();
+        modelBuilder.AddOutboxStateEntity();
+        modelBuilder.Entity<Transaction>(entity =>
+    {
+        // Matches the existing Transactions.Amount column.
+        entity.Property(t => t.Amount)
+            .HasPrecision(18, 2);
 
-        // Enforce idempotency: Only one Alert can be created per TransactionId.
-        // If MassTransit processes the same message twice, the second DB insert will fail 
-        // with a unique constraint violation, naturally preventing duplicate alerts.
+        entity.Property(t => t.ProcessingStatus)
+            .HasConversion<int>()
+            .HasDefaultValue(TransactionProcessingStatus.Pending);
+
+        entity.Property(t => t.FraudReasons)
+            .HasMaxLength(4000)
+            .HasDefaultValue(string.Empty)
+            .IsRequired();
+
+        entity.Property(t => t.RowVersion)
+            .IsRowVersion();
+    });
+
         modelBuilder.Entity<Alert>()
             .HasIndex(a => a.TransactionId)
             .IsUnique();
+
     }
 }

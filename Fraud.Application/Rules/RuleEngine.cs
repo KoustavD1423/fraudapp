@@ -11,29 +11,51 @@ public class RuleEngine
         _rules = rules;
     }
 
-    public async Task<(bool isFraud, double score, List<string> reasons)> EvaluateAsync(
-    TransactionIngested tx,
-    CancellationToken cancellationToken = default)
+    public async Task<(bool isFraud, double score, List<string> reasons)>
+    EvaluateAsync(
+        TransactionIngested tx,
+        CancellationToken cancellationToken = default)
     {
         var matchedRules = new List<IFraudRule>();
+        var reasons = new List<string>();
 
         foreach (var rule in _rules)
         {
-            if (await rule.IsMatchAsync(tx, cancellationToken))
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (rule is IDetailedFraudRule detailedRule)
             {
-                matchedRules.Add(rule);
+                var result = await detailedRule.EvaluateDetailedAsync(
+                    tx,
+                    cancellationToken);
+
+                if (result.IsMatch)
+                {
+                    matchedRules.Add(rule);
+                    reasons.AddRange(result.Reasons);
+                }
+            }
+            else
+            {
+                var isMatch = await rule.IsMatchAsync(
+                    tx,
+                    cancellationToken);
+
+                if (isMatch)
+                {
+                    matchedRules.Add(rule);
+                    reasons.Add(rule.Name);
+                }
             }
         }
 
-        if (!matchedRules.Any())
+        if (matchedRules.Count == 0)
             return (false, 0, new List<string>());
 
-        double totalScore = matchedRules.Max(r => r.RiskScore);
+        var totalScore = matchedRules.Max(
+            rule => rule.RiskScore);
 
-        return (
-            true,
-            totalScore,
-            matchedRules.Select(r => r.Name).ToList()
-        );
+        return (true, totalScore, reasons);
     }
 }
+
